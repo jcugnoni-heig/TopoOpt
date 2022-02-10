@@ -1,0 +1,26 @@
+P actions make_etude
+P actions make_etude
+P consbtc oui
+P debug nodebug
+P memjob 4194304
+P memory_limit 4096.0
+P mode interactif
+P mpi_nbcpu 1
+P mpi_nbnoeud 1
+P nomjob test1
+P origine AsterStudy 0.11
+P rep_trav C:\Users\UTILIS~1\AppData\Local\Temp\utilisateur-NB-6869-interactif_7946
+P soumbtc oui
+P studyid 8888-0001-LAPTOP-T1J2OO79
+P time_limit 50000.0
+P tpmax 50000.0
+P tpsjob 834
+P version stable
+A memjeveux 512.0
+A tpmax 50000.0
+F comm C:\Users\utilisateur\switchdrive\Optimisation_topologique\code\test_case\test1.comm D  1
+F mmed C:\Users\utilisateur\switchdrive\Optimisation_topologique\code\test_case\Mesh_tet2.med D  20
+F mess C:\Users\utilisateur\switchdrive\Optimisation_topologique\code\test_case\test1.mess R  6
+F rmed C:\Users\utilisateur\switchdrive\Optimisation_topologique\code\test_case\test1.res.med R  80
+F unv C:\Users\utilisateur\switchdrive\Optimisation_topologique\code\test_case\test1_mat1_meshOpt.unv R  30
+F unv C:\Users\utilisateur\switchdrive\Optimisation_topologique\code\test_case\test1_mat2_meshOpt.unv R  31
