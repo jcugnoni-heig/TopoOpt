@@ -1,0 +1,23 @@
+P actions make_etude
+P actions make_etude
+P consbtc oui
+P debug nodebug
+#[memjob]
+#[memory_limit]
+P mode interactif
+#[mpi_nbcpu]
+P mpi_nbnoeud 1
+#[nomJob]
+P origine AsterStudy 0.11
+P soumbtc oui
+P studyid 8888-0001-LAPTOP-T1J2OO79
+#[time_limit]
+#[tpsjob]
+#[version]
+A memjeveux 256.0
+#[tpmax]
+#[commFile]
+#[meshFile]
+#[messFile]
+#[resultFile]
+#[meshOptFile]

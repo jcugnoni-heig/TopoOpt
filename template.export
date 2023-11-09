@@ -5,7 +5,8 @@ P debug nodebug
 #[memjob]
 #[memory_limit]
 P mode interactif
-#[mpi_nbcpu]
+#[ncpus]
+P mpi_nbcpu 1
 P mpi_nbnoeud 1
 #[nomJob]
 P origine AsterStudy 0.11
@@ -21,3 +22,6 @@ A memjeveux 256.0
 #[messFile]
 #[resultFile]
 #[meshOptFile]
+F libr stress_histograms_mat1.txt R  81
+F libr stress_histograms_mat2.txt R  82
+F libr convergence.txt R  83

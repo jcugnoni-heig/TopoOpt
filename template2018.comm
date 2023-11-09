@@ -1,0 +1,287 @@
+#########################################################################
+#Cellular Automata SIMP algorithm for structure optimization by material penalization
+#
+# Author: J.Cugnoni, based on previous work of Frederic Renou (see OGACA project)
+# and Pisa Andrea 13/04/2016
+#
+# Further modifications wrt initial SIMP method: extended to parallel solver & multiload opt, 
+# simple cellular automata with lagrangian multiplier (=target SED) for volume control and/of stiffness bounds,
+# ported to Aster 13.4 & SALOME MECA 2018 
+#########################################################################
+
+import sys
+
+import aster
+import math
+
+DEBUT(PAR_LOT="NON")
+
+#from scipy.optimize import brent
+#import scipy.weave as weave
+
+
+#########################################################################
+#1 DEFINE STUDY BELOW
+#########################################################################
+
+MAIL=LIRE_MAILLAGE(FORMAT='MED',);
+
+#[modimaillage]
+
+#[modele]
+# MODE=AFFE_MODELE(MAILLAGE=MAIL,
+                 # AFFE=_F(TOUT='OUI',
+                         # PHENOMENE='MECANIQUE',
+                         # MODELISATION='3D',),
+                 # );
+#                  DISTRIBUTION=_F(METHODE='SOUS_DOMAINE', PARTITIONNEUR='SCOTCH',NB_SOUS_DOMAINE=4),);
+
+
+## Boundary conditions
+#[BCs]
+                                
+## multiplier functions for multiple loads
+#[times]
+
+#[fonctions]
+
+# loads  & BCNDS
+#[BCloadsArrays]
+
+#[optimizationGroups]
+
+# assemble load cases
+lcs = []
+for item in BCNDS:
+	lcs.append({'CHARGE':item})
+for i in range(len(LOADCASES)):
+	BCs = LOADCASES[i]
+	for j in range(len(BCs)):
+		lcs.append({'CHARGE':BCs[j],'FONC_MULT':FMS[i]})
+Loading=tuple(lcs)
+
+#########################################################################
+#2 Begin of SIMP-HCA uniform strain energy density hybrid cellular automata
+#########################################################################
+
+##------------------------------------------
+#2.1 Parameters
+##------------------------------------------
+
+#[Eini]
+#[Smax]
+#[SEDtargetMax]
+#[nIter]
+#[targetVF]
+#[densityPenaltyExponent]
+#[precision]
+#[adaptRate]
+#[maxRate]
+#[Emin]
+#[eta1]
+#[eta2]
+#[saveInterval]
+
+# # material definition
+# Eini=210e3     # elastic modulus (!! model units m=> Pa, mm=> MPa)
+# StressMax=100  # max allowable stress (!! units !!)
+# SEDtargetMax=0.5*StressMax*StressMax/Eini    # max allowed strain energy density 
+# # topo opt parameters
+# nbiter=25 #80        # number of algo. iterations
+# targetvf=0.15  # target volume fraction, used to update SEDtarget accordingly
+# p=3    # density penalty exponent
+# Precision=1e-6   # lower bound of variables
+# AdaptRate=0.1    # rate constant for adaptation algo
+# Emin=Eini*Precision   # min modulus
+# maxrate=0.1      # max change of density per iter
+# saveinterval=1; #save elastic field every n timestep
+# eta1=0.5  # evolution damping factor 
+# eta2=0.5  # target SED damping factor
+
+
+
+SEDtarget=SEDtargetMax # initial target SED for opt algo
+volumefraction=1.0  # initial volume fraction
+volinit=0.0 # initial part volume, will be computed on iteration 0
+voltol=0.05 # tolerance on volume
+
+# FE solver options
+
+#[solver]
+
+## no MPI
+#SOLVOPT={'METHODE':'MUMPS','ELIM_LAGR':'NON'}    # default MUMPS direct solver
+#SOLVOPT={'METHODE':'GCPC', 'PRE_COND':'LDLT_INC','NIVE_REMPLISSAGE':1} # very efficient iterative solver using conjugate gradients                 
+
+## with MPI parallelism
+#SOLVOPT={'ELIM_LAGR':'LAGR2','LOW_RANK_SEUIL':'1e-09','MATR_DISTRIBUEE':'OUI','METHODE':'MUMPS','RENUM':'SCOTCH'}  # parallel MUMPS, robust and pretty fast
+#SOLVOPT={'METHODE':'PETSC','PRE_COND':'LDLT_SP', 'MATR_DISTRIBUEE':'OUI'}  # parallel iterative solver with single precision inverse as precond, robust and fast
+#SOLVOPT={'METHODE':'PETSC','PRE_COND':'BOOMER','MATR_DISTRIBUEE':'OUI'} # efficient iterative solver, best when using only one or two load cases
+
+
+##------------------------------------------
+#2.2 Initialization 
+##------------------------------------------
+
+##------------------------------------------
+# field initialization
+
+VOLF=CREA_CHAMP(OPERATION='AFFE',TYPE_CHAM='NOEU_NEUT_R', MODELE=MODE, #PROL_ZERO='OUI',
+		AFFE=_F(TOUT='OUI', NOM_CMP=('X1'),VALE=volumefraction));
+
+##------------------------------------------
+#Computing YOUNG modulus field based on VOLF field
+
+def f_young(x):
+    return max(Emin,min(Eini,x**densityPenaltyExponent*Eini));
+	
+def f_frozen(x):
+	return Eini;
+
+FYOUNG= FORMULE(NOM_PARA= ('X1'), VALE='f_young(X1)')
+FFROZN= FORMULE(NOM_PARA= ('X1'), VALE='f_frozen(X1)')
+if len(groupFrozen)>0 :
+    CHFY=CREA_CHAMP(OPERATION='AFFE',TYPE_CHAM='NOEU_NEUT_F', MODELE=MODE, #PROL_ZERO='OUI',
+		AFFE=(_F(GROUP_MA = groupOpt, NOM_CMP=('X1'),VALE_F=(FYOUNG)),
+		     _F(GROUP_MA = groupFrozen, NOM_CMP=('X1'),VALE_F=(FFROZN))));
+else:
+    CHFY=CREA_CHAMP(OPERATION='AFFE',TYPE_CHAM='NOEU_NEUT_F', MODELE=MODE, #PROL_ZERO='OUI',
+		AFFE=(_F(GROUP_MA = groupOpt, NOM_CMP=('X1'),VALE_F=(FYOUNG)),));
+YOUNG=CREA_CHAMP( OPERATION='EVAL', TYPE_CHAM='NOEU_NEUT_R', CHAM_F=CHFY, CHAM_PARA=(VOLF,));
+
+# control function
+
+#Density update as a function of the current mechanical state (SED) 
+#def VolFractionUpdate(signal,oldvf):
+#    dv=adaptRate*(signal-SEDtarget)/SEDtarget;
+#    newvf=oldvf+max(-maxRate,min(maxRate,dv));
+#    return min(1,max(newvf,precision));
+def VolFractionUpdate(signal,oldvf):
+    tmp=oldvf*(signal/SEDtarget)
+    newvf=oldvf*(1-eta1)+tmp*eta1
+    return min(1,max(newvf,precision))
+	
+def VolFUpdateFrozen(signal,oldvf):
+    return 1.0
+
+FUPDT= FORMULE(NOM_PARA= ('TOTALE','X1'),VALE='VolFractionUpdate(TOTALE,X1)')
+FFRZN= FORMULE(NOM_PARA= ('TOTALE','X1'),VALE='VolFUpdateFrozen(TOTALE,X1)')
+
+if len(groupFrozen)>0 :
+    CHFUPD =CREA_CHAMP(OPERATION='AFFE',TYPE_CHAM='NOEU_NEUT_F', MODELE=MODE, #PROL_ZERO='OUI',
+                  AFFE=(_F(GROUP_MA = groupOpt, NOM_CMP=('X1'),VALE_F=FUPDT),
+                  _F(GROUP_MA = groupFrozen, NOM_CMP=('X1'),VALE_F=FFRZN)));
+else:
+    CHFUPD =CREA_CHAMP(OPERATION='AFFE',TYPE_CHAM='NOEU_NEUT_F', MODELE=MODE, #PROL_ZERO='OUI',
+                  AFFE=(_F(GROUP_MA = groupOpt, NOM_CMP=('X1'),VALE_F=FUPDT),));
+
+
+##------------------------------------------
+#Material as function of X1
+
+NU_F=DEFI_CONSTANTE(VALE=0.3);
+
+RHO1_F=DEFI_CONSTANTE(VALE=1.0);
+
+E_F= DEFI_FONCTION(NOM_PARA='NEUT1',VALE=(+1.E-9,+1.E-9,1.E+14,+1.E+14),PROL_DROITE='LINEAIRE',PROL_GAUCHE='LINEAIRE');
+
+MAMEC=DEFI_MATERIAU (ELAS_FO=_F(E=E_F,NU=NU_F,RHO=RHO1_F));
+
+CHMATE=AFFE_MATERIAU(MAILLAGE=MAIL,
+			AFFE=_F(TOUT='OUI',MATER=MAMEC),
+			AFFE_VARC=_F(NOM_VARC='NEUT1',CHAM_GD=YOUNG),INFO=1
+			)
+
+
+#########################################################################
+#4 Optimization Loop
+#########################################################################
+j=0;
+
+for k in range(1,nIter+1):
+			     ##------------------------------------------
+                             #4.1 Solve the problem
+			     ##------------------------------------------
+                 aster.affiche('RESULTAT', "iteration %d"%k)
+                 res=MECA_STATIQUE(MODELE=MODE,
+                                    CHAM_MATER=CHMATE,
+                                    #CARA_ELEM=pl,
+                                    LIST_INST=times,
+                                    EXCIT=Loading,
+                                    SOLVEUR=SOLVOPT,
+                                    );
+                 res = CALC_CHAMP(reuse=res,MODELE=MODE,CHAM_MATER=CHMATE,RESULTAT=res,ENERGIE=('ENEL_ELGA','ENEL_ELNO','ENEL_NOEU'),CRITERES=('SIEQ_ELNO','SIEQ_NOEU',));
+
+                 # extract maxima of STRAIN ENERGY
+                 CHENEL=CREA_CHAMP(TYPE_CHAM='NOEU_ENER_R', OPERATION='EXTR',RESULTAT=res,NOM_CHAM='ENEL_NOEU',TYPE_MAXI='MAXI_ABS');      		
+
+               
+                                                       
+                 ##------------------------------------------
+                 #4.2 Field Optimization
+			     ##------------------------------------------
+                 # compute current model mass = volume as density is normalized to 1
+                 #########################################################################
+
+                 ##------------------------------------------
+                 #  Volume determination 
+                 ##------------------------------------------
+                 
+                 CH2=CREA_CHAMP(OPERATION='ASSE', TYPE_CHAM='NOEU_SIEF_R',MODELE=MODE, #PROL_ZERO='OUI',
+					          ASSE=_F(TOUT='OUI', CHAM_GD=VOLF,NOM_CMP=('X1',), NOM_CMP_RESU = ('SIXX',)), )
+                 CH2elno=CREA_CHAMP(OPERATION='DISC', TYPE_CHAM='ELGA_SIEF_R',MODELE=MODE, PROL_ZERO='OUI',	CHAM_GD=CH2, )
+                 resutemp=CREA_RESU(OPERATION='AFFE',TYPE_RESU='EVOL_ELAS',NOM_CHAM='SIEF_ELGA',AFFE=_F(CHAM_GD=CH2elno,MODELE=MODE,INST=1),);
+                 taatemp=POST_ELEM(INFO=2, MODELE=MODE,RESULTAT=resutemp, INTEGRALE=_F(TOUT='OUI',NOM_CHAM ='SIEF_ELGA',TYPE_MAILLE='3D', NOM_CMP ='SIXX'),);
+                 tatemp=taatemp.EXTR_TABLE();
+                 voli=tatemp.INTE_SIXX[0];
+
+                 # SED target update:
+                 if k==1:
+                     volinit=voli
+                     voltarget=volinit*targetVF
+                     print('**** Initial volume %f, target volume %f'%(voli,voltarget))
+                 if  voli> voltarget*(1+voltol):   # volume too large, increase SED target
+                     SEDtargetNew=max(SEDtargetMax*precision, min( SEDtargetMax, eta2*SEDtarget*voli/voltarget+(1-eta2)*SEDtarget ) )
+                     print('**** Volume too big increase SEDtarget. Current SEDtarget %g, New SEDtarget%g'%(SEDtarget,SEDtargetNew))
+                     SEDtarget=SEDtargetNew
+                 elif voli< voltarget*(1-voltol):
+                     SEDtargetNew=max(SEDtargetMax*precision, min( SEDtargetMax, eta2*SEDtarget*voli/voltarget+(1-eta2)*SEDtarget ) )
+                     print('**** Volume too low decrease SEDtarget. Current SEDtarget %g, New SEDtarget%g'%(SEDtarget,SEDtargetNew))
+                     SEDtarget=SEDtargetNew
+
+                 DETRUIRE(INFO=1,CONCEPT=_F(NOM=(CH2,resutemp,taatemp,CH2elno),),);
+                 print("**** Current Volume : ", voli)
+                 
+                 ##------------------------------------------
+                 #  Field update
+                 ##------------------------------------------
+                 
+                 VOLF0=CREA_CHAMP(OPERATION='ASSE', TYPE_CHAM='NOEU_NEUT_R',MODELE=MODE, ASSE=_F(TOUT='OUI', CHAM_GD=VOLF,NOM_CMP=('X1',), NOM_CMP_RESU = ('X1',)), );
+                 DETRUIRE(CONCEPT=_F(NOM=(VOLF)));
+                 VOLF=CREA_CHAMP( OPERATION='EVAL', TYPE_CHAM='NOEU_NEUT_R', CHAM_F=CHFUPD, CHAM_PARA=(CHENEL,VOLF0));
+                 if ( k%saveInterval == 0 ): 
+                             #save mechanical fields
+                             IMPR_RESU(FORMAT='MED',UNITE=80,RESU=_F(MAILLAGE=MAIL,RESULTAT=res ,NOM_RESU_MED='RESU'+str(k),),);
+                             # save density and moduli fields: RATIO=>DEPL COM=>REAC
+                             RESVF=CREA_RESU(OPERATION='AFFE',TYPE_RESU='EVOL_ELAS',NOM_CHAM='DEPL',AFFE=_F(CHAM_GD=VOLF0,MODELE=MODE,INST=1),);
+                             IMPR_RESU(FORMAT='MED',UNITE=80,RESU=_F(MAILLAGE=MAIL,RESULTAT=RESVF,NOM_RESU_MED='VF'+str(k),),);
+                             DETRUIRE(INFO=1,CONCEPT=_F(NOM=(RESVF),),);
+                             j=j+1;
+                             print(" **** SAVED RESULTS : ", k)			     
+                 DETRUIRE(INFO=1,CONCEPT=_F(NOM=(VOLF0,CHENEL,res ,CHMATE,YOUNG),),);
+                 
+                 ## MATERIAL UPDATE
+                 
+                 YOUNG=CREA_CHAMP( OPERATION='EVAL', TYPE_CHAM='NOEU_NEUT_R', CHAM_F=CHFY, CHAM_PARA=(VOLF,));
+                 CHMATE=AFFE_MATERIAU(MAILLAGE=MAIL,AFFE=_F(TOUT='OUI',MATER=MAMEC),AFFE_VARC=_F(NOM_VARC='NEUT1',CHAM_GD=YOUNG),INFO=1)
+                 print('**** Iteration: ',k,' ended')
+
+
+#########################################################################
+#5 FINAL SAVING
+#########################################################################
+
+#RESRATIO=CREA_RESU(reuse=RESRATIO,OPERATION='AFFE',TYPE_RESU='EVOL_ELAS',NOM_CHAM='DEPL',AFFE=_F(CHAM_GD=CHRATIO,MODELE=MODE,INST=1),);
+#IMPR_RESU(FORMAT='MED',UNITE=80,RESU=_F(MAILLAGE=MAIL,RESULTAT=RESRATIO,),);
+
+FIN();

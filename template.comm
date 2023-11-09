@@ -8,13 +8,75 @@
 # simple cellular automata with lagrangian multiplier (=target SED) for volume control and/of stiffness bounds,
 # ported to Aster 13.4 & SALOME MECA 2018
 #########################################################################
-
+DEBUT(PAR_LOT="NON")
 import sys
-
+import os
 import aster
 import math
+import numpy as np
+from Utilitai import partition
 
-DEBUT(PAR_LOT="NON")
+pyGrid = partition.MAIL_PY()
+
+
+def PrintStressHistogram(p_result, p_volf, p_material, p_stressRange, p_nInterv, p_fileName, p_iter):
+    # result concept, 1 or 2, [Smin, Smax], integer, 'fort.XX', integer
+    delta = (p_stressRange[1] - p_stressRange[0])/p_nInterv
+    bornes = list(np.linspace(p_stressRange[0], p_stressRange[1], p_nInterv + 1))
+    bInf = bornes[0:-1]
+    bSup = bornes[1:]
+    
+    if p_iter == 1:
+        lineContent = 'bornes'
+        for ii in range(len(bInf)):
+            lineContent += '\t[' + str(bInf[ii]) + '-' + str(bSup[ii]) + ']'
+        f = open(p_fileName, 'a+')
+        f.write(lineContent + '\n')
+        f.close()
+        
+    DEFI_GROUP(INFO=2, reuse = MAIL, MAILLAGE = MAIL, CREA_GROUP_NO = _F(NOM='mat'+str(p_material), OPTION='INTERVALLE_VALE',CHAM_GD=p_volf, NOM_CMP='X1', VALE=(-0.5*p_material+1, -0.5*p_material+1.5),),);
+    
+    pyGrid.FromAster('MAIL')
+    nodeGrps = MAIL.LIST_GROUP_NO()
+
+    groupExists = False
+    for grp in nodeGrps:
+        if grp[0] == 'mat'+str(p_material):
+            groupExists = True
+            break
+
+    if groupExists:
+        DEFI_GROUP(reuse = MAIL, MAILLAGE = MAIL, CREA_GROUP_MA = _F(GROUP_NO='mat'+str(p_material), NOM='mat'+str(p_material), OPTION='APPUI', TYPE_APPUI='AU_MOINS_UN'),);
+
+        histo = POST_ELEM(RESULTAT = p_result, 
+                       VOLUMOGRAMME = _F(GROUP_MA = 'mat'+str(p_material), #TOUT = 'OUI',
+                                         NOM_CHAM = 'SIEQ_ELGA',
+                                         NOM_CMP = 'VMIS',
+                                         NB_INTERV = p_nInterv,
+                                         BORNES = p_stressRange))
+
+        temp1 = histo.EXTR_TABLE()
+        temp2 = temp1.values()
+        distr = temp2['DISTRIBUTION']
+
+        newLine = []
+        for val in distr:
+            newLine.append(str(val))
+    else:
+        newLine = [str(0.0)]*nInterv
+        
+    newLine = 'distr_' + str(p_iter) + '\t' + '\t'.join(newLine) + '\n'
+    f = open(p_fileName, 'a+')
+    f.write(newLine)
+    f.close()
+    
+    if groupExists:
+        DETRUIRE(CONCEPT=_F(NOM=(histo),),);
+        DEFI_GROUP(reuse = MAIL, MAILLAGE = MAIL, DETR_GROUP_NO = _F(NOM='mat'+str(p_material)))
+        DEFI_GROUP(reuse = MAIL, MAILLAGE = MAIL, DETR_GROUP_MA = _F(NOM='mat'+str(p_material)))
+
+
+
 
 #from scipy.optimize import brent
 #import scipy.weave as weave
@@ -88,6 +150,7 @@ Loading=tuple(lcs)
 SEDtarget=SEDtargetMax # initial target SED for opt algo
 VFinit=1.0  # initial volume fraction
 targetTol=0.01 # tolerance on target reach
+fileConvContent = 'iter\tSEDtarget\tvolume\tmaxDpl\tnode\n'
 
 # FE solver options
 
@@ -139,11 +202,11 @@ else:
 YOUNG=CREA_CHAMP( OPERATION='EVAL', TYPE_CHAM='NOEU_NEUT_R', CHAM_F=CHFY, CHAM_PARA=(VOLF,));
 
 # FYOUNG et FFROZN sont des "formules" (issues de "fonctions" python).
-# FYOUNG est affectée aux mailles des groupes dans groupOpt (='opti').
-# FFROZN est affectée aux mailles des groupes dans groupFrozen (='frozen').
-# Ces affectations sont appliquées à CHFY, un champ de fonctions.
-# Ce champ de fonctions doit ensuite être évalué à l'aide du champ de paramètres (VOLF, le champ de densités)
-# pour obtenir en champ scalaire de réels (YOUNG).
+# FYOUNG est affectee aux mailles des groupes dans groupOpt (='opti').
+# FFROZN est affectee aux mailles des groupes dans groupFrozen (='frozen').
+# Ces affectations sont appliquees a CHFY, un champ de fonctions.
+# Ce champ de fonctions doit ensuite etre evalue a l'aide du champ de parametres (VOLF, le champ de densites)
+# pour obtenir en champ scalaire de reels (YOUNG).
 
 #Density update as a function of the current mechanical state (SED)
 #def VolFractionUpdate(signal,oldvf):
@@ -192,8 +255,8 @@ CHMATE=AFFE_MATERIAU(MAILLAGE=MAIL,
             AFFE_VARC=_F(NOM_VARC='NEUT1',CHAM_GD=YOUNG),INFO=1
             )
 
-# A l'aide d'une astuce (E_F = fonction identité du paramètre 'NEUT1'), on affecte le champ scalaire
-# YOUNG au module élastique du matériau (CHMATE)
+# A l'aide d'une astuce (E_F = fonction identite du parametre 'NEUT1'), on affecte le champ scalaire
+# YOUNG au module elastique du materiau (CHMATE)
 
 #########################################################################
 #4 Optimization Loop
@@ -202,124 +265,130 @@ j=0;
 fNorm = FORMULE(NOM_PARA=('DX', 'DY', 'DZ'), VALE='sqrt(DX**2 + DY**2 + DZ**2)')
 converged = False
 for k in range(1,nIter+1):
-                 ##------------------------------------------
-                             #4.1 Solve the problem
-                 ##------------------------------------------
-                 aster.affiche('RESULTAT', "iteration %d"%k)
+    ##------------------------------------------
+             #4.1 Solve the problem
+    ##------------------------------------------
+    aster.affiche('RESULTAT', "iteration %d"%k)
 
-                 res=MECA_STATIQUE(MODELE=MODE,
-                                    CHAM_MATER=CHMATE,
-                                    #CARA_ELEM=pl,
-                                    LIST_INST=times,
-                                    EXCIT=Loading,
-                                    SOLVEUR=SOLVOPT,
-                                    );
-                 res = CALC_CHAMP(reuse=res,MODELE=MODE,CHAM_MATER=CHMATE,RESULTAT=res,ENERGIE=('ENEL_ELGA','ENEL_ELNO','ENEL_NOEU'),CRITERES=('SIEQ_ELNO','SIEQ_NOEU',));
-
-
-                 ##------------------------------------------
-                 #4.2 Field Optimization
-                 ##------------------------------------------
-                 # compute current model mass = volume as density is normalized to 1
-                 #########################################################################
-
-                 ##------------------------------------------
-                 #  Volume determination (voli -> targetVF) ; if bi-mat opt, voli = stiff material volume
-                 ##------------------------------------------
-                 CH2=CREA_CHAMP(OPERATION='ASSE', TYPE_CHAM='NOEU_SIEF_R',MODELE=MODE, #PROL_ZERO='OUI',
-                              ASSE=_F(TOUT='OUI', CHAM_GD=VOLF,NOM_CMP=('X1',), NOM_CMP_RESU = ('SIXX',)), )
-                 CH2elno=CREA_CHAMP(OPERATION='DISC', TYPE_CHAM='ELGA_SIEF_R',MODELE=MODE, PROL_ZERO='OUI', CHAM_GD=CH2, )
-                 resutemp=CREA_RESU(OPERATION='AFFE',TYPE_RESU='EVOL_ELAS',NOM_CHAM='SIEF_ELGA',AFFE=_F(CHAM_GD=CH2elno,MODELE=MODE,INST=1),);
-                 taatemp=POST_ELEM(INFO=2, MODELE=MODE,RESULTAT=resutemp, INTEGRALE=_F(TOUT='OUI',NOM_CHAM ='SIEF_ELGA',TYPE_MAILLE='3D', NOM_CMP ='SIXX'),);
-                 tatemp=taatemp.EXTR_TABLE();
-                 voli=tatemp.INTE_SIXX[0];
-                 # Le champ VOLF (composante X1) est affecté à un champ de contraintes aux noeuds (CH2)
-                 # La discrétisation  de CH2 est modifiée comme étant aux points de Gauss (CH2elno)
-                 # Les valeurs sont intégrées sur le volume
-                 
-                 ##------------------------------------------
-                 #  Max displacement determination (maxDi -> targetDispl)
-                 ##------------------------------------------
-                 # extract maxima of displacement (regarding norm) among "time steps"="load cases"
-                 CHDmax=CREA_CHAMP(TYPE_CHAM='NOEU_DEPL_R', OPERATION='EXTR',RESULTAT=res,NOM_CHAM='DEPL',TYPE_MAXI='NORM_TRAN');
-                 # Create "result" containing field CHFmax (displacement field with maxima regarding norm)
-                 resNormD=CREA_RESU(OPERATION='AFFE',TYPE_RESU='EVOL_ELAS',NOM_CHAM='DEPL',AFFE=_F(CHAM_GD=CHDmax,MODELE=MODE,INST=1),);
-                 # A user-defined field is created in result resNormD. Field 'DEPL' of result resNormD is evaluated using fNorm function
-                 resNormD = CALC_CHAMP(RESULTAT=resNormD, reuse=resNormD, CHAM_UTIL=_F(NOM_CHAM='DEPL', FORMULE=(fNorm), NUME_CHAM_RESU=1));
-                 tabMaxD = POST_RELEVE_T(ACTION=_F(RESULTAT=resNormD, NOM_CHAM='UT01_NOEU', INTITULE='tabDMax', NOM_CMP='X1',  OPERATION=('EXTREMA', ), TOUT='OUI'), TITRE='Displacement norm extrema');
-                 table = tabMaxD.EXTR_TABLE()
-                 maxDi = float(table.VALE[0])
-                 nodei = str(table.NOEUD[0])
-                 
-                 DETRUIRE(INFO=1,CONCEPT=_F(NOM=(CH2, resutemp, taatemp, CH2elno, CHDmax, resNormD, tabMaxD,),),);
-                 
-                 aster.affiche('RESULTAT', 'Current SED ' + str(SEDtarget))
-                 aster.affiche('RESULTAT', 'Current vol ' + str(voli))
-                 aster.affiche('RESULTAT', 'Current dpl ' + str(maxDi) + ' on node ' + nodei)
-
-                 # 1st iteration : initial quantities computation
-                 if k==1:
-                     voltarget=voli*targetVF
-                     prevVol = voli
-                     prevMaxDi = maxDi
-
-                 # Check if convergence is achieved whether it's volume of max displ target mode
-                 if boolVolTarget == True:
-                     volRelDiff = abs(voli-prevVol)/prevVol
-                     prevVol = voli
-                     aster.affiche('RESULTAT', 'Relative vol difference ' + str(volRelDiff))
-                     if k > 1 and volRelDiff < convCrit and abs(voli-voltarget)/voltarget < targetTol:
-                         converged = True
-                 else:
-                     maxDRelDiff = abs((maxDi-prevMaxDi)/prevMaxDi)
-                     prevMaxDi = maxDi
-                     aster.affiche('RESULTAT', 'Relative dpl difference ' + str(maxDRelDiff))
-                     if k > 1 and maxDRelDiff < convCrit and abs((maxDi-targetDispl)/targetDispl) < targetTol:
-                         converged = True
-
-                 # SED target update:
-                 if boolVolTarget == True:
-                     SEDtarget=max(SEDtargetMax*precision, min( SEDtargetMax, eta2*SEDtarget*voli/voltarget+(1-eta2)*SEDtarget ) )
-                 else:
-                     SEDtarget=max(SEDtargetMax*precision, min( SEDtargetMax, eta2*SEDtarget*targetDispl/maxDi+(1-eta2)*SEDtarget ) )
-                 # le SED target est augmenté/réduit suivant le rapport V_actuel/V_target (ou D_target/Dactuel), permettant ensuite d'enlever/ajouter de la matière.
-                 # SEDtarget initial vaut SEDtargetMax puis est borné par [precision*SEDtargetMax ; SEDtargetMax]
+    res=MECA_STATIQUE(MODELE=MODE,
+                    CHAM_MATER=CHMATE,
+                    #CARA_ELEM=pl,
+                    LIST_INST=times,
+                    EXCIT=Loading,
+                    SOLVEUR=SOLVOPT,
+                    );
+    res = CALC_CHAMP(reuse=res,MODELE=MODE,CHAM_MATER=CHMATE,RESULTAT=res,ENERGIE=('ENEL_ELGA','ENEL_ELNO','ENEL_NOEU'),CRITERES=('SIEQ_ELGA','SIEQ_NOEU',));
 
 
-                 ##------------------------------------------
-                 #  Field update
-                 ##------------------------------------------
-                 # extract maxima of STRAIN ENERGY among "time steps"="load cases"
-                 CHENEL=CREA_CHAMP(TYPE_CHAM='NOEU_ENER_R', OPERATION='EXTR',RESULTAT=res,NOM_CHAM='ENEL_NOEU',TYPE_MAXI='MAXI_ABS');
-                 VOLF0=CREA_CHAMP(OPERATION='ASSE', TYPE_CHAM='NOEU_NEUT_R',MODELE=MODE, ASSE=_F(TOUT='OUI', CHAM_GD=VOLF,NOM_CMP=('X1',), NOM_CMP_RESU = ('X1',)), );
-                 DETRUIRE(CONCEPT=_F(NOM=(VOLF)));
-                 VOLF=CREA_CHAMP( OPERATION='EVAL', TYPE_CHAM='NOEU_NEUT_R', CHAM_F=CHFUPD, CHAM_PARA=(CHENEL,VOLF0)); # use (indirectly) VolFractionUpdate(signal,oldvf) & VolFUpdateFrozen()
-                 
-                 if ( k%saveInterval == 0 ) or (converged == True) or (k == nIter):
-                             # Largest stresses among load cases (components by components independently) = point by point : [maxVMIS, maxPRIN1, etc etc]
-                             CHSmax=CREA_CHAMP(TYPE_CHAM='NOEU_SIEF_R', OPERATION='EXTR',RESULTAT=res,NOM_CHAM='SIEQ_NOEU',TYPE_MAXI='MAXI');
+    ##------------------------------------------
+    #4.2 Field Optimization
+    ##------------------------------------------
+    # compute current model mass = volume as density is normalized to 1
+    #########################################################################
+
+    ##------------------------------------------
+    #  Volume determination (voli -> targetVF) ; if bi-mat opt, voli = stiff material volume
+    ##------------------------------------------
+    CH2=CREA_CHAMP(OPERATION='ASSE', TYPE_CHAM='NOEU_SIEF_R',MODELE=MODE, #PROL_ZERO='OUI',
+              ASSE=_F(TOUT='OUI', CHAM_GD=VOLF,NOM_CMP=('X1',), NOM_CMP_RESU = ('SIXX',)), )
+    CH2elno=CREA_CHAMP(OPERATION='DISC', TYPE_CHAM='ELGA_SIEF_R',MODELE=MODE, PROL_ZERO='OUI', CHAM_GD=CH2, )
+    resutemp=CREA_RESU(OPERATION='AFFE',TYPE_RESU='EVOL_ELAS',NOM_CHAM='SIEF_ELGA',AFFE=_F(CHAM_GD=CH2elno,MODELE=MODE,INST=1),);
+    taatemp=POST_ELEM(INFO=2, MODELE=MODE,RESULTAT=resutemp, INTEGRALE=_F(TOUT='OUI',NOM_CHAM ='SIEF_ELGA',TYPE_MAILLE='3D', NOM_CMP ='SIXX'),);
+    tatemp=taatemp.EXTR_TABLE();
+    voli=tatemp.INTE_SIXX[0];
+    # Le champ VOLF (composante X1) est affecte a un champ de contraintes aux noeuds (CH2)
+    # La discretisation  de CH2 est modifiee comme etant aux points de Gauss (CH2elno)
+    # Les valeurs sont integrees sur le volume
+
+    ##------------------------------------------
+    #  Max displacement determination (maxDi -> targetDispl)
+    ##------------------------------------------
+    # extract maxima of displacement (regarding norm) among "time steps"="load cases"
+    CHDmax=CREA_CHAMP(TYPE_CHAM='NOEU_DEPL_R', OPERATION='EXTR',RESULTAT=res,NOM_CHAM='DEPL',TYPE_MAXI='NORM_TRAN');
+    # Create "result" containing field CHFmax (displacement field with maxima regarding norm)
+    resNormD=CREA_RESU(OPERATION='AFFE',TYPE_RESU='EVOL_ELAS',NOM_CHAM='DEPL',AFFE=_F(CHAM_GD=CHDmax,MODELE=MODE,INST=1),);
+    # A user-defined field is created in result resNormD. Field 'DEPL' of result resNormD is evaluated using fNorm function
+    resNormD = CALC_CHAMP(RESULTAT=resNormD, reuse=resNormD, CHAM_UTIL=_F(NOM_CHAM='DEPL', FORMULE=(fNorm), NUME_CHAM_RESU=1));
+    tabMaxD = POST_RELEVE_T(ACTION=_F(RESULTAT=resNormD, NOM_CHAM='UT01_NOEU', INTITULE='tabDMax', NOM_CMP='X1',  OPERATION=('EXTREMA', ), TOUT='OUI'), TITRE='Displacement norm extrema');
+    table = tabMaxD.EXTR_TABLE()
+    maxDi = float(table.VALE[0])
+    nodei = str(table.NOEUD[0])
+
+    DETRUIRE(INFO=1,CONCEPT=_F(NOM=(CH2, resutemp, taatemp, CH2elno, CHDmax, resNormD, tabMaxD,),),);
+
+    aster.affiche('RESULTAT', 'Current SED ' + str(SEDtarget))
+    aster.affiche('RESULTAT', 'Current vol ' + str(voli))
+    aster.affiche('RESULTAT', 'Current dpl ' + str(maxDi) + ' on node ' + nodei)
+
+    fileConvContent += str(k) + '\t' + str(SEDtarget) + '\t' + str(voli) + '\t' + str(maxDi) + '(' + nodei + ')' + '\n'
+
+
+    # 1st iteration : initial quantities computation
+    if k==1:
+        voltarget=voli*targetVF
+        prevVol = voli
+        prevMaxDi = maxDi
+
+    # Check if convergence is achieved whether it's volume of max displ target mode
+    if boolVolTarget == True:
+        volRelDiff = abs(voli-prevVol)/prevVol
+        prevVol = voli
+        aster.affiche('RESULTAT', 'Relative vol difference ' + str(volRelDiff))
+        if k > 1 and volRelDiff < convCrit and abs(voli-voltarget)/voltarget < targetTol:
+            converged = True
+    else:
+        maxDRelDiff = abs((maxDi-prevMaxDi)/prevMaxDi)
+        prevMaxDi = maxDi
+        aster.affiche('RESULTAT', 'Relative dpl difference ' + str(maxDRelDiff))
+        if k > 1 and maxDRelDiff < convCrit and abs((maxDi-targetDispl)/targetDispl) < targetTol:
+            converged = True
+
+    # SED target update:
+    if boolVolTarget == True:
+        SEDtarget=max(SEDtargetMax*precision, min( SEDtargetMax, eta2*SEDtarget*voli/voltarget+(1-eta2)*SEDtarget ) )
+    else:
+        SEDtarget=max(SEDtargetMax*precision, min( SEDtargetMax, eta2*SEDtarget*targetDispl/maxDi+(1-eta2)*SEDtarget ) )
+    # le SED target est augmente/reduit suivant le rapport V_actuel/V_target (ou D_target/Dactuel), permettant ensuite d'enlever/ajouter de la matiere.
+    # SEDtarget initial vaut SEDtargetMax puis est borne par [precision*SEDtargetMax ; SEDtargetMax]
+
+
+    ##------------------------------------------
+    #  Field update
+    ##------------------------------------------
+    # extract maxima of STRAIN ENERGY among "time steps"="load cases"
+    CHENEL=CREA_CHAMP(TYPE_CHAM='NOEU_ENER_R', OPERATION='EXTR',RESULTAT=res,NOM_CHAM='ENEL_NOEU',TYPE_MAXI='MAXI_ABS');
+    VOLF0=CREA_CHAMP(OPERATION='ASSE', TYPE_CHAM='NOEU_NEUT_R',MODELE=MODE, ASSE=_F(TOUT='OUI', CHAM_GD=VOLF,NOM_CMP=('X1',), NOM_CMP_RESU = ('X1',)), );
+    DETRUIRE(CONCEPT=_F(NOM=(VOLF)));
+    VOLF=CREA_CHAMP( OPERATION='EVAL', TYPE_CHAM='NOEU_NEUT_R', CHAM_F=CHFUPD, CHAM_PARA=(CHENEL,VOLF0)); # use (indirectly) VolFractionUpdate(signal,oldvf) & VolFUpdateFrozen()
+
+    if (k == 1) or ( k%saveInterval == 0 ) or (converged == True) or (k == nIter):
+        # Largest stresses among load cases (components by components independently) = point by point : [maxVMIS, maxPRIN1, etc etc]
+        CHSmax=CREA_CHAMP(TYPE_CHAM='NOEU_SIEF_R', OPERATION='EXTR',RESULTAT=res,NOM_CHAM='SIEQ_NOEU',TYPE_MAXI='MAXI');
+
+        RESSmax=CREA_RESU(OPERATION='AFFE',TYPE_RESU='EVOL_ELAS',NOM_CHAM='SIEQ_NOEU',AFFE=_F(CHAM_GD=CHSmax,MODELE=MODE,INST=1),);
+        RESENEL=CREA_RESU(OPERATION='AFFE',TYPE_RESU='EVOL_ELAS',NOM_CHAM='ENEL_NOEU',AFFE=_F(CHAM_GD=CHENEL,MODELE=MODE,INST=1),);
+        RESVF=CREA_RESU(OPERATION='AFFE',TYPE_RESU='EVOL_ELAS',NOM_CHAM='DEPL',AFFE=_F(CHAM_GD=VOLF0,MODELE=MODE,INST=1),);
+
+        IMPR_RESU(FORMAT='MED',UNITE=80,RESU=_F(MAILLAGE=MAIL,RESULTAT=res ,NOM_RESU_MED='RESU'+str(k),),);
+        IMPR_RESU(FORMAT='MED',UNITE=80,RESU=_F(MAILLAGE=MAIL,RESULTAT=RESVF,NOM_RESU_MED='VF'+str(k),),);
+        IMPR_RESU(FORMAT='MED',UNITE=80,RESU=_F(MAILLAGE=MAIL,RESULTAT=RESENEL,NOM_RESU_MED='SEDmax'+str(k),),);
+        IMPR_RESU(FORMAT='MED',UNITE=80,RESU=_F(MAILLAGE=MAIL,RESULTAT=RESSmax,NOM_RESU_MED='S_max'+str(k),),);
+
+        PrintStressHistogram(res, VOLF, 1, [0, 2400], 24, 'fort.81', k)
+        PrintStressHistogram(res, VOLF, 1, [0, 400], 20, 'fort.82', k)
+
+        DETRUIRE(INFO=1,CONCEPT=_F(NOM=(CHSmax, RESVF, RESENEL, RESSmax, ),),);
+        j=j+1;
                              
-                             RESSmax=CREA_RESU(OPERATION='AFFE',TYPE_RESU='EVOL_ELAS',NOM_CHAM='SIEQ_NOEU',AFFE=_F(CHAM_GD=CHSmax,MODELE=MODE,INST=1),);
-                             RESENEL=CREA_RESU(OPERATION='AFFE',TYPE_RESU='EVOL_ELAS',NOM_CHAM='ENEL_NOEU',AFFE=_F(CHAM_GD=CHENEL,MODELE=MODE,INST=1),);
-                             RESVF=CREA_RESU(OPERATION='AFFE',TYPE_RESU='EVOL_ELAS',NOM_CHAM='DEPL',AFFE=_F(CHAM_GD=VOLF0,MODELE=MODE,INST=1),);
+    DETRUIRE(INFO=1,CONCEPT=_F(NOM=(VOLF0, CHENEL, res, CHMATE, YOUNG,),),);
 
-                             IMPR_RESU(FORMAT='MED',UNITE=80,RESU=_F(MAILLAGE=MAIL,RESULTAT=res ,NOM_RESU_MED='RESU'+str(k),),);
-                             IMPR_RESU(FORMAT='MED',UNITE=80,RESU=_F(MAILLAGE=MAIL,RESULTAT=RESVF,NOM_RESU_MED='VF'+str(k),),);
-                             IMPR_RESU(FORMAT='MED',UNITE=80,RESU=_F(MAILLAGE=MAIL,RESULTAT=RESENEL,NOM_RESU_MED='SEDmax'+str(k),),);
-                             IMPR_RESU(FORMAT='MED',UNITE=80,RESU=_F(MAILLAGE=MAIL,RESULTAT=RESSmax,NOM_RESU_MED='S_max'+str(k),),);
-                             
-                             DETRUIRE(INFO=1,CONCEPT=_F(NOM=(CHSmax, RESVF, RESENEL, RESSmax),),);
-                             j=j+1;
-                             
-                 DETRUIRE(INFO=1,CONCEPT=_F(NOM=(VOLF0, CHENEL, res, CHMATE, YOUNG,),),);
+    ## MATERIAL UPDATE
 
-                 ## MATERIAL UPDATE
+    YOUNG=CREA_CHAMP( OPERATION='EVAL', TYPE_CHAM='NOEU_NEUT_R', CHAM_F=CHFY, CHAM_PARA=(VOLF,));
+    CHMATE=AFFE_MATERIAU(MAILLAGE=MAIL,AFFE=_F(TOUT='OUI',MATER=MAMEC),AFFE_VARC=_F(NOM_VARC='NEUT1',CHAM_GD=YOUNG),INFO=1)
 
-                 YOUNG=CREA_CHAMP( OPERATION='EVAL', TYPE_CHAM='NOEU_NEUT_R', CHAM_F=CHFY, CHAM_PARA=(VOLF,));
-                 CHMATE=AFFE_MATERIAU(MAILLAGE=MAIL,AFFE=_F(TOUT='OUI',MATER=MAMEC),AFFE_VARC=_F(NOM_VARC='NEUT1',CHAM_GD=YOUNG),INFO=1)
-
-                 if converged == True:
-                     break
+    if converged == True:
+        break
 
 
 #########################################################################
@@ -331,6 +400,9 @@ DEFI_GROUP(reuse = MAIL, MAILLAGE = MAIL, CREA_GROUP_NO = _F(NOM='mat1', OPTION=
 DEFI_GROUP(reuse = MAIL, MAILLAGE = MAIL, CREA_GROUP_MA = _F(GROUP_NO='mat1', NOM='mat1', OPTION='APPUI', TYPE_APPUI='AU_MOINS_UN'),); #MAJORITE, TOUT, SOMMET
 MAOPT1=CREA_MAILLAGE(MAILLAGE=MAIL,RESTREINT=_F(GROUP_MA=(('mat1',)+groupFrozen)))
 IMPR_RESU(FORMAT='IDEAS',UNITE=30,RESU=_F(MAILLAGE=MAOPT1))
+
+with open('fort.83', 'w') as f:
+    f.write(fileConvContent)
 
 if bimat == True:
     DEFI_GROUP(reuse = MAIL, MAILLAGE = MAIL, CREA_GROUP_NO = _F(NOM='mat2', OPTION='INTERVALLE_VALE',CHAM_GD=VOLF, NOM_CMP='X1', VALE=(0.0, 0.5),),);

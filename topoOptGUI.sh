@@ -1,4 +1,13 @@
 #!/bin/bash
 
-cd /home/caelinux/Documents/topoopt/
-/opt/SalomeMeca/appli_V2019_univ/salome shell python interface.py
+# SCRIPT=$(realpath "$0")
+# SCRIPTPATH=$(dirname "$SCRIPT") # /DevFiles/App
+PYTHONPATH=python3
+
+# echo $SCRIPT
+# echo $SCRIPTPATH
+# exit
+
+# cd $SCRIPTPATH
+
+$PYTHONPATH main.py
