@@ -30,7 +30,7 @@ import math
 import SALOMEDS
 
 
-geompy = geomBuilder.New(theStudy)
+geompy = geomBuilder.New()
 
 
 ###
@@ -56,7 +56,7 @@ geompy = geomBuilder.New(theStudy)
 import  SMESH, SALOMEDS
 from salome.smesh import smeshBuilder
 
-smesh = smeshBuilder.New(theStudy)
+smesh = smeshBuilder.New()
 #~aFilterManager = smesh.CreateFilterManager()
 
 meshopt_unv = smesh.CreateMeshesFromUNV(unvFile)

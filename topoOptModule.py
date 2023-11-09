@@ -1020,7 +1020,6 @@ class Utils:
 					fileContent += p_dic[key] + '\n'
 					break
 			if keyFound == False:
-				print(line)
 				fileContent += line
 		fileTemplate.close()
 		
